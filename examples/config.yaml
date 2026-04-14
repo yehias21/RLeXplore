@@ -1,0 +1,39 @@
+environment:
+  type: minigrid
+  params:
+    grid_type: MiniGrid-Empty-16x16-v0
+    max_steps: 1000
+    num_actions: 3
+
+model:
+  type: mlp
+  params:
+    hidden_sizes: [128, 128]
+    dropout: 0.2
+
+exploration:
+  type: count_based
+  params:
+    beta: 0.1
+
+dqn:
+  gamma: 0.99
+  batch_size: 128
+  learning_rate: 0.0005
+  memory_size: 200000
+  target_update: 1000
+
+training:
+  episodes: 2000
+  max_steps_per_episode: 1000
+  save_path: models/dqn_count_based.pth
+
+evaluation:
+  episodes: 100
+  max_steps: 500
+
+logger:
+  type: stdout
+  params: {}
+
+seed: 5

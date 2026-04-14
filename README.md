@@ -1,199 +1,126 @@
-# PyExplore
+# RLeXplore
 
-A modular reinforcement learning framework for exploring different environments, models, and exploration strategies.
+Exploration algorithms in reinforcement learning, implemented against the taxonomy of
+Amin, Gomrokchi, Satija, van Hoof, Precup, *A Survey of Exploration Methods in
+Reinforcement Learning* (2021). Value-based, discrete-action agents on MiniGrid.
 
-## Demo
-![image](dqn.gif)
+![demo](dqn.gif)
 
-## Features
+## Layout
 
-- Modular architecture for easy extension
-- Support for different environments (currently MiniGrid)
-- Multiple exploration strategies (Epsilon-Greedy, Boltzmann, Count-Based)
-- Deep Q-Network (DQN) implementation
-- Experiment tracking with Comet.ml
-- Configuration-based setup
-- Easy training and evaluation
+The project is organised around five SOLID concerns:
 
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/pyexplore.git
-cd pyexplore
+```
+rlexplore/
+  core/           Protocols (ActionSelector, IntrinsicRewardSource, ...) + plugin registry
+  envs/           Environment adapters; preprocessing split from env creation (SRP)
+  models/         Q-networks (MLP, NoisyMLP, Bootstrapped)
+  memory/         Replay buffer
+  exploration/    Strategies, one family per file
+  agents/         DQN agent composes model + strategy + memory via DI
+  training/       Trainer and Evaluator
+  logging_/       Stdout + Comet loggers behind a common Protocol
+  config.py       Declarative experiment config
+  cli.py          rlexplore --config ... --mode {train,eval,both}
 ```
 
-2. Install dependencies:
+New strategies/envs/models register themselves (`@STRATEGIES.register("name")`)
+and become addressable from config without edits to the trainer (OCP).
+
+## Implemented strategies
+
+Mapped to the survey's taxonomy (section references in parens):
+
+| key | strategy | survey | reward? |
+|---|---|---|---|
+| `epsilon_greedy` | ε-greedy, exp. decay | §4.1 eq. 14 | extrinsic |
+| `epsilon_first` | ε-first | §4.1 Tran-Thanh 2010 | extrinsic |
+| `decaying_epsilon` | linear-decay ε | §4.1 Caelen 2007 | extrinsic |
+| `ez_greedy` | εz-greedy (temporally extended) | §4.1 Dabney 2020 | extrinsic |
+| `boltzmann` | softmax(Q/T) | §5.1 eq. 20 | extrinsic |
+| `max_boltzmann` | ε-greedy + Boltzmann fallback | §5.1 Wiering 1999 | extrinsic |
+| `vdbe` | state-dependent ε from TD-error | §5.1 Tokic 2010 | extrinsic |
+| `vdbe_softmax` | VDBE + Boltzmann fallback | §5.1 Tokic & Palm 2011 | extrinsic |
+| `pursuit` | pursuit algorithm | §5.1 Thathachar 1984 | extrinsic |
+| `count_based` | β/√N(s) bonus | §6.2 | extrinsic + intrinsic |
+| `hash_count` | SimHash pseudo-count | §6.2 Tang 2017 | extrinsic + intrinsic |
+| `ucb_q` | UCB-H on Q | §6.1 Jin 2018 | extrinsic + intrinsic |
+| `rnd` | Random Network Distillation | §6.3 Burda 2018b | extrinsic + intrinsic |
+| `icm` | Intrinsic Curiosity Module | §6.3 Pathak 2017 | extrinsic + intrinsic |
+| `noisy_net` | NoisyNets | §8 Fortunato 2018 | extrinsic |
+| `bootstrapped_dqn` | Bootstrapped DQN (K heads) | §8 Osband 2016 | extrinsic |
+
+Not included (need different agent/environment paradigms and out of scope here):
+full Bayes-adaptive methods (BAMDP/BEETLE/PSRL, which are model-based and tabular),
+meta-RL (MAML, MAESN, which require task distributions), policy-gradient exploration
+methods (Gaussian/parameter-space noise, which need a PG agent), and
+continuous-control-specific methods (MuJoCo, OU noise, PolyRL).
+
+## Correctness notes on the originals
+
+Three strategies existed in the previous `pyexplore` version. Issues found and
+fixed in this rewrite:
+
+- **ε-greedy**: matched eq. (14). The exponential decay schedule is a common
+  practical variant; kept.
+- **Boltzmann**: matched eq. (20); kept unchanged.
+- **Count-based**: three problems:
+  1. The bonus was added to Q-values at action-selection time. The survey
+     (eq. 24) adds it to the reward, not to Q. Selection here is now greedy on
+     Q, and the bonus is routed through the Trainer into the replay reward.
+  2. `update_count` fired *before* `get_bonus`, so the first visit already got
+     `β/√1` (partially self-cancelling). Now `observe` updates counts after
+     the transition is emitted, giving genuinely novel states their full bonus.
+  3. In the old `optimize_model`, `additional_reward` was a scalar broadcast
+     across the whole batch using only the *current* state's count, which is
+     incorrect. We
+     now compute a per-transition bonus at collection time and store it in the
+     replay buffer as part of the reward.
+
+## Install
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Usage
 
-### Basic Usage
-
-Run training and evaluation with the default configuration:
-
 ```bash
-python -m pyexplore.main --mode both
+python -m rlexplore.cli --config examples/config.yaml --mode both
 ```
 
-### Using Custom Configuration
+Switch strategies by editing `exploration.type` in the YAML. To run RND:
 
-1. Create a configuration file (see `examples/config.json` for reference)
-2. Run with your configuration:
-
-```bash
-python -m pyexplore.main --mode both --config path/to/your/config.json
+```yaml
+exploration:
+  type: rnd
+  params:
+    beta: 0.1
+    hidden: 128
+    out_size: 128
+    lr: 0.0001
 ```
 
-### Example
+## Extending
 
-Run the MiniGrid example:
-
-```bash
-python examples/run_minigrid.py
-```
-
-## Configuration
-
-The framework uses a JSON-based configuration system. Here's an example configuration:
-
-```json
-{
-    "environment": {
-        "name": "minigrid",
-        "type": "MiniGridEnvironment",
-        "params": {
-            "grid_type": "MiniGrid-Empty-16x16-v0",
-            "max_steps": 1000
-        }
-    },
-    "model": {
-        "name": "dqn",
-        "type": "DQN",
-        "params": {
-            "hidden_layer_size": [128, 128]
-        }
-    },
-    "exploration": {
-        "name": "count_based",
-        "type": "CountBased",
-        "params": {
-            "beta": 0.1
-        }
-    },
-    "training": {
-        "episodes": 2000,
-        "batch_size": 128,
-        "target_update": 1000,
-        "gamma": 0.99,
-        "memory_size": 200000,
-        "learning_rate": 0.0005
-    },
-    "evaluation": {
-        "episodes": 1000,
-        "max_steps": 500
-    }
-}
-```
-
-## Extending the Framework
-
-### Adding a New Environment
-
-1. Create a new class inheriting from `BaseEnvironment`:
 ```python
-from pyexplore.envs.base_env import BaseEnvironment
+from rlexplore.core.registry import STRATEGIES
+from rlexplore.exploration.base import ExplorationStrategy
 
-class NewEnvironment(BaseEnvironment):
-    def __init__(self, **params):
-        super().__init__()
-        # Initialize with params
-        
-    def create(self, **kwargs):
-        # Create and return environment
-        
-    def preprocess(self, observation, device):
-        # Preprocess observation
-        
-    def get_action_space(self):
-        # Return action space size
-        
-    def get_observation_space(self):
-        # Return observation space size
+@STRATEGIES.register("my_strategy")
+class MyStrategy(ExplorationStrategy):
+    def select_action(self, state, q_net, step):
+        ...
 ```
 
-2. Add it to your configuration:
-```json
-{
-    "environment": {
-        "name": "new_env",
-        "type": "NewEnvironment",
-        "params": {
-            "param1": "value1",
-            "param2": "value2"
-        }
-    }
-}
+Reference it from the config:
+
+```yaml
+exploration:
+  type: my_strategy
+  params: {...}
 ```
 
-### Adding a New Model
+## License
 
-1. Create a new class inheriting from `BaseModel`:
-```python
-from pyexplore.models.base_model import BaseModel
-
-class NewModel(BaseModel):
-    def __init__(self, input_size, output_size, **params):
-        super().__init__(input_size, output_size)
-        # Initialize model architecture
-        
-    def forward(self, x):
-        # Define forward pass
-```
-
-2. Add it to your configuration:
-```json
-{
-    "model": {
-        "name": "new_model",
-        "type": "NewModel",
-        "params": {
-            "param1": "value1"
-        }
-    }
-}
-```
-
-### Adding a New Exploration Strategy
-
-1. Create a new class inheriting from `BaseExplorationStrategy`:
-```python
-from pyexplore.exploration.base_strategy import BaseExplorationStrategy
-
-class NewStrategy(BaseExplorationStrategy):
-    def __init__(self, num_actions, device, **params):
-        super().__init__(num_actions, device)
-        # Initialize strategy parameters
-        
-    def select_action(self, state, policy_net, steps_done):
-        # Implement action selection logic
-```
-
-2. Add it to your configuration:
-```json
-{
-    "exploration": {
-        "name": "new_strategy",
-        "type": "NewStrategy",
-        "params": {
-            "param1": "value1"
-        }
-    }
-}
-```
-
-
-
-
+See `LICENSE`.
